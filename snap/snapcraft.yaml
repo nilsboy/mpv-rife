@@ -1,0 +1,365 @@
+name: mpv-rife
+version: "0.1.0"
+summary: mpv with RIFE neural-network frame interpolation
+description: |
+  mpv built with VapourSynth support, bundled with the RIFE ncnn/Vulkan plugin
+  and model weights. Enables real-time frame interpolation for smoother motion.
+
+  RIFE requires a Vulkan-capable GPU.
+
+grade: stable
+confinement: strict
+base: core26
+
+platforms:
+  amd64:
+
+parts:
+  libplacebo:
+    plugin: meson
+    source: https://github.com/haasn/libplacebo.git
+    source-depth: 1
+    source-submodules: [3rdparty/glad, 3rdparty/Vulkan-Headers, 3rdparty/fast_float]
+    meson-parameters:
+      - --prefix=/usr
+      - --buildtype=release
+      - -Ddemos=false
+      - -Dtests=false
+      - -Dvulkan=enabled
+      - -Dshaderc=disabled
+    build-packages:
+      - build-essential
+      - meson
+      - ninja-build
+      - pkg-config
+      - libvulkan-dev
+      - liblcms2-dev
+    build-environment:
+      - PKG_CONFIG_PATH: "$CRAFT_STAGE/usr/lib/x86_64-linux-gnu/pkgconfig:$CRAFT_STAGE/usr/lib/pkgconfig:$CRAFT_STAGE/usr/share/pkgconfig"
+
+  vapoursynth:
+    plugin: meson
+    # R79 is the last release before vapoursynth.pyx used the Python 3.15
+    # sentinel() builtin, which the distro Cython (3.1.6) cannot compile.
+    source: https://github.com/vapoursynth/vapoursynth.git
+    source-tag: R79
+    source-depth: 1
+    meson-parameters:
+      - --prefix=/usr
+      - --buildtype=release
+      - -Denable_x86_asm=true
+    build-packages:
+      - build-essential
+      - meson
+      - ninja-build
+      - pkg-config
+      - cython3
+      - python3-dev
+      - zlib1g-dev
+      - libzimg-dev
+      - libvulkan-dev
+    stage-packages:
+      - libpython3.14
+      - libpython3.14-stdlib
+      - python3.14-minimal
+      - python3.14
+      - libzimg2
+      - libgomp1
+    after: [libplacebo]
+    override-build: |
+      craftctl default
+      # The stock .pc omits libdir; RIFE derives its install directory from it.
+      mkdir -p "$CRAFT_PART_INSTALL/usr/lib/pkgconfig"
+      cat > "$CRAFT_PART_INSTALL/usr/lib/pkgconfig/vapoursynth.pc" <<'EOF'
+      prefix=/usr
+      libdir=/usr/lib
+      includedir=${pcfiledir}/../python3/dist-packages/vapoursynth/include
+
+      Name: vapoursynth
+      Description: A frameserver for the 21st century
+      Version: 79
+      Cflags: -I${includedir}
+      EOF
+
+  rife:
+    plugin: meson
+    source: https://github.com/styler00dollar/VapourSynth-RIFE-ncnn-Vulkan.git
+    source-depth: 1
+    meson-parameters:
+      - --prefix=/usr
+      - --buildtype=release
+    build-packages:
+      - build-essential
+      - meson
+      - ninja-build
+      - pkg-config
+      - libvulkan-dev
+      - glslang-tools
+      - git
+    build-environment:
+      - PKG_CONFIG_PATH: "$CRAFT_STAGE/usr/lib/x86_64-linux-gnu/pkgconfig:$CRAFT_STAGE/usr/lib/pkgconfig:$CRAFT_STAGE/usr/share/pkgconfig"
+    # The repository carries hundreds of MB of model weights, which makes a
+    # regular clone slow and flaky. Fetch blobs lazily and check out only the
+    # build inputs; the `models` part supplies the weights separately.
+    override-pull: |
+      git clone --filter=blob:none --no-checkout --depth 1 \
+        https://github.com/styler00dollar/VapourSynth-RIFE-ncnn-Vulkan.git "$CRAFT_PART_SRC"
+      git -C "$CRAFT_PART_SRC" sparse-checkout init --cone
+      git -C "$CRAFT_PART_SRC" sparse-checkout set RIFE pkgconfig subprojects
+      git -C "$CRAFT_PART_SRC" checkout
+    override-build: |
+      # ncnn and its glslang fork are pinned by gitlink; use exactly those
+      # revisions rather than whatever the default branches happen to be.
+      ncnn_rev="$(git -C "$CRAFT_PART_SRC" ls-tree HEAD subprojects/ncnn | awk '{print $3}')"
+      rm -rf "$CRAFT_PART_SRC/subprojects/ncnn"
+      git clone https://github.com/Tencent/ncnn.git "$CRAFT_PART_SRC/subprojects/ncnn"
+      git -C "$CRAFT_PART_SRC/subprojects/ncnn" checkout "$ncnn_rev"
+
+      glslang_rev="$(git -C "$CRAFT_PART_SRC/subprojects/ncnn" ls-tree HEAD glslang | awk '{print $3}')"
+      rm -rf "$CRAFT_PART_SRC/subprojects/ncnn/glslang"
+      git clone https://github.com/nihui/glslang.git "$CRAFT_PART_SRC/subprojects/ncnn/glslang"
+      git -C "$CRAFT_PART_SRC/subprojects/ncnn/glslang" checkout "$glslang_rev"
+
+      craftctl default
+    after: [vapoursynth]
+
+  mpv:
+    plugin: meson
+    source: https://github.com/mpv-player/mpv.git
+    source-depth: 1
+    meson-parameters:
+      - --prefix=/usr
+      - --buildtype=release
+      - -Dvapoursynth=enabled
+      - -Dlibmpv=true
+      - -Dcplayer=true
+      - -Dmanpage-build=disabled
+      - -Dbuild-date=false
+    build-packages:
+      - build-essential
+      - meson
+      - ninja-build
+      - pkg-config
+      - libavcodec-dev
+      - libavfilter-dev
+      - libavformat-dev
+      - libavutil-dev
+      - libswresample-dev
+      - libswscale-dev
+      - libass-dev
+      - libvulkan-dev
+      - libx11-dev
+      - libxext-dev
+      - libxrandr-dev
+      - libxfixes-dev
+      - libxpresent-dev
+      - libxkbcommon-dev
+      - libwayland-dev
+      - wayland-protocols
+      - libdrm-dev
+      - libgbm-dev
+      - libegl-dev
+      - libgl-dev
+      - libpulse-dev
+      - libasound2-dev
+      - libpipewire-0.3-dev
+      - libuchardet-dev
+      - libbluray-dev
+      - libdvdnav-dev
+      - libcdio-dev
+      - libcdio-paranoia-dev
+      - liblcms2-dev
+      - libsixel-dev
+      - liblua5.2-dev
+      - libmujs-dev
+      - libarchive-dev
+      - libsndio-dev
+      - librubberband-dev
+      - libva-dev
+      - libvdpau-dev
+      - libzimg-dev
+      - libjpeg-dev
+      - libzstd-dev
+      - python3-dev
+      - cython3
+    # mpv links the codec/GPU stack dynamically; the strict-confinement snap
+    # must bundle it rather than rely on the host.
+    stage-packages:
+      - libaom3
+      - libarchive13t64
+      - libasound2t64
+      - libass9
+      - libasyncns0
+      - libavcodec62
+      - libavfilter11
+      - libavformat62
+      - libavutil60
+      - libbluray3
+      - libbs2b0
+      - libcairo-gobject2
+      - libcairo2
+      - libcdio-cdda2t64
+      - libcdio-paranoia2t64
+      - libcdio19t64
+      - libchromaprint1
+      - libcjson1
+      - libcodec2-1.2
+      - libdatrie1
+      - libdav1d7
+      - libdvdnav4
+      - libdvdread8t64
+      - libegl1
+      - libfftw3-double3
+      - libflac14
+      - libflite1
+      - libfontconfig1
+      - libfribidi0
+      - libgdk-pixbuf-2.0-0
+      - libglvnd0
+      - libglycin-2-0
+      - libgme0
+      - libgomp1
+      - libgraphite2-3
+      - libgsm1
+      - libharfbuzz0b
+      - libhwy1t64
+      - libjack0
+      - libjpeg-turbo8
+      - libjxl0.11
+      - liblcms2-2
+      - liblilv-0-0
+      - liblua5.2-0
+      - libmbedcrypto16
+      - libmp3lame0
+      - libmpg123-0t64
+      - libmujs3
+      - libmysofa1
+      - libnorm1t64
+      - libnuma1
+      - libogg0
+      - libopenjp2-7
+      - libopenmpt0t64
+      - libopus0
+      - libpango-1.0-0
+      - libpangocairo-1.0-0
+      - libpangoft2-1.0-0
+      - libpgm-5.3-0t64
+      - libpipewire-0.3-0t64
+      - libpixman-1-0
+      - libpulse0
+      - librabbitmq4
+      - librav1e0.8
+      - librist4
+      - librsvg2-2
+      - librubberband3
+      - libsamplerate0
+      - libserd-0-0
+      - libsharpyuv0
+      - libshine3
+      - libsixel1
+      - libsnappy1v5
+      - libsndfile1
+      - libsndio7.0
+      - libsodium23
+      - libsord-0-0
+      - libsoxr0
+      - libspeex1
+      - libsratom-0-0
+      - libsrt1.5-gnutls
+      - libssh-4
+      - libsvtav1enc2
+      - libswresample6
+      - libswscale9
+      - libthai0
+      - libtheoradec2
+      - libtheoraenc2
+      - libtwolame0
+      - libuchardet0
+      - libudfread3
+      - libunibreak6
+      - libva-drm2
+      - libva-wayland2
+      - libva-x11-2
+      - libva2
+      - libvdpau1
+      - libvidstab1.1
+      - libvorbis0a
+      - libvorbisenc2
+      - libvorbisfile3
+      - libvpl2
+      - libvpx12
+      - libvulkan1
+      - libwayland-client0
+      - libwayland-cursor0
+      - libwayland-egl1
+      - libwebp7
+      - libwebpmux3
+      - libx11-6
+      - libx11-xcb1
+      - libx264-165
+      - libx265-215
+      - libxau6
+      - libxcb-dri3-0
+      - libxcb-render0
+      - libxcb-shm0
+      - libxcb1
+      - libxdmcp6
+      - libxext6
+      - libxfixes3
+      - libxml2-16
+      - libxrender1
+      - libxvidcore4
+      - libzimg2
+      - libzix-0-0
+      - libzmq5
+      - libzvbi0t64
+      - ocl-icd-libopencl1
+    build-environment:
+      - PKG_CONFIG_PATH: "$CRAFT_STAGE/usr/lib/x86_64-linux-gnu/pkgconfig:$CRAFT_STAGE/usr/lib/pkgconfig:$CRAFT_STAGE/usr/share/pkgconfig"
+    after: [vapoursynth, libplacebo, rife]
+
+  models:
+    plugin: nil
+    override-build: |
+      mkdir -p "$CRAFT_PART_INSTALL/usr/lib/vapoursynth/models/rife-v2.3"
+      base="https://raw.githubusercontent.com/styler00dollar/VapourSynth-RIFE-ncnn-Vulkan/master/models/rife-v2.3"
+      for f in contextnet.bin contextnet.param flownet.bin flownet.param fusionnet.bin fusionnet.param; do
+        curl -fSL --retry 5 -o "$CRAFT_PART_INSTALL/usr/lib/vapoursynth/models/rife-v2.3/$f" "$base/$f"
+      done
+    build-packages:
+      - curl
+    after: [rife]
+
+  runtime:
+    plugin: nil
+    override-build: |
+      install -Dm755 "$CRAFT_PROJECT_DIR/snap/bin/mpv-rife" \
+        "$CRAFT_PART_INSTALL/usr/bin/mpv-rife"
+      install -Dm644 "$CRAFT_PROJECT_DIR/mpv/mpv.conf" \
+        "$CRAFT_PART_INSTALL/mpv/mpv.conf"
+      install -Dm644 "$CRAFT_PROJECT_DIR/mpv/scripts/rife-toggle.lua" \
+        "$CRAFT_PART_INSTALL/mpv/scripts/rife-toggle.lua"
+      install -Dm644 "$CRAFT_PROJECT_DIR/vapoursynth/rife.vpy" \
+        "$CRAFT_PART_INSTALL/vapoursynth/rife.vpy"
+
+apps:
+  mpv:
+    command: usr/bin/mpv-rife
+    plugs:
+      - home
+      - network
+      - network-bind
+      # The opengl interface also exposes the host's Vulkan driver libraries.
+      - opengl
+      - audio-playback
+      - audio-record
+      - joystick
+      - removable-media
+      - screen-inhibit-control
+      - unity7
+      - x11
+      - wayland
+    environment:
+      LD_LIBRARY_PATH: "$SNAP/usr/lib/python3/dist-packages/vapoursynth:$SNAP/usr/lib/x86_64-linux-gnu:$SNAP/usr/lib"
+      PYTHONHOME: "$SNAP/usr"
+      PYTHONPATH: "$SNAP/usr/lib/python3/dist-packages"

@@ -1,0 +1,2 @@
+- [x] add RIFE (Real-Time Intermediate Flow Estimation for Video Frame Interpolation) support to MPV (https://mpv.io/)
+- [x] build a snap

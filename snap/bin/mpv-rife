@@ -1,0 +1,24 @@
+#!/bin/sh
+# Launcher for the mpv-rife snap.
+#
+# mpv dlopens libvsscript by name; point VSSCRIPT_PATH at the bundled copy so
+# the loader always finds the matching VapourSynth build. VSScript then resolves
+# its Python interpreter through a config file keyed by the path it was loaded
+# from, so generate that entry for the bundled interpreter before starting mpv.
+set -eu
+
+VS_PKG="$SNAP/usr/lib/python3/dist-packages/vapoursynth"
+# libpulsecommon lives in a pulseaudio/ subdirectory that is not on the
+# default loader path.
+export LD_LIBRARY_PATH="$SNAP/usr/lib/x86_64-linux-gnu/pulseaudio:$VS_PKG:$SNAP/usr/lib/x86_64-linux-gnu:$SNAP/usr/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+export VSSCRIPT_PATH="$VS_PKG/libvsscript.so"
+export VAPOURSYNTH_EXTRA_PLUGIN_PATH="$SNAP/usr/lib/vapoursynth"
+export PYTHONPATH="$SNAP/usr/lib/python3/dist-packages${PYTHONPATH:+:$PYTHONPATH}"
+
+export XDG_CONFIG_HOME="${XDG_CONFIG_HOME:-$SNAP_USER_COMMON/config}"
+if [ ! -f "$XDG_CONFIG_HOME/vapoursynth/vapoursynth.toml" ]; then
+    mkdir -p "$XDG_CONFIG_HOME"
+    "$SNAP/usr/bin/python3.14" -m vapoursynth config >/dev/null 2>&1 || true
+fi
+
+exec "$SNAP/usr/bin/mpv" --config-dir="$SNAP/mpv" "$@"
