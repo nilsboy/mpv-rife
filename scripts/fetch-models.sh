@@ -35,6 +35,7 @@ declare -A MODEL_DIRS=(
     [22]=rife-v4.5_ensembleTrue
     [23]=rife-v4.6_ensembleFalse
     [24]=rife-v4.6_ensembleTrue
+    [55]=rife-v4.17_lite_ensembleFalse
 )
 
 usage() {

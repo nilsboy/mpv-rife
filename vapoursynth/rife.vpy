@@ -19,8 +19,10 @@ core = vs.core
 
 # --- configuration -----------------------------------------------------------
 
-# RIFE model id; see the RIFE plugin README. 5 = rife-v2.3.
-MODEL = 5
+# RIFE model id; see the RIFE plugin README. 55 = rife-v4.17-lite, whose single
+# lightweight network is comfortably faster than the older multi-network models
+# (5 = rife-v2.3) and still supports an arbitrary target frame rate.
+MODEL = 55
 
 # Frame-rate multiplier. 2/1 doubles the frame rate.
 FACTOR_NUM = 2
@@ -33,8 +35,21 @@ FPS_DEN = None
 # Vulkan device index.
 GPU_ID = 0
 
-# Interpolation threads; None lets the filter pick.
+# Interpolation threads. More threads overlap ncnn queue submissions, which
+# measured faster than matching the GPU's compute-queue count; None keeps the
+# plugin default.
 GPU_THREAD = 2
+
+# Interpolate at this fraction of the source size, then scale the result back
+# up. RIFE's cost scales with pixel count, so this is the main lever when a GPU
+# cannot hit the target frame rate at full resolution. 0.5 roughly quadruples
+# throughput at some loss of sharpness; raise toward 1.0 as the GPU allows.
+SCALE = 0.5
+
+# UHD mode computes the optical flow at reduced resolution and upscales it,
+# which is substantially faster for large frames. None enables it automatically
+# for clips at least 1080 pixels tall.
+UHD = None
 
 # Skip interpolation across scene changes (runs misc.SCDetect first).
 SCENE_CHANGE = False
@@ -87,6 +102,12 @@ def main():
     # mpv's clip has no usable frame rate, so stamp the source rate on it.
     rgb = core.std.AssumeFPS(rgb, fpsnum=source_num, fpsden=source_den)
 
+    scaled = rgb
+    if SCALE != 1.0:
+        width = max(2, int(rgb.width * SCALE) & ~1)
+        height = max(2, int(rgb.height * SCALE) & ~1)
+        scaled = core.resize.Bicubic(rgb, width=width, height=height)
+
     kwargs = {
         "model": MODEL,
         "fps_num": fps_num,
@@ -95,10 +116,17 @@ def main():
     }
     if GPU_THREAD is not None:
         kwargs["gpu_thread"] = GPU_THREAD
+    uhd = UHD if UHD is not None else clip.height >= 1080
+    if uhd:
+        kwargs["uhd"] = True
     if SCENE_CHANGE:
         kwargs["sc"] = True
 
-    interpolated = core.rife.RIFE(rgb, **kwargs)
+    interpolated = core.rife.RIFE(scaled, **kwargs)
+    if SCALE != 1.0:
+        interpolated = core.resize.Bicubic(
+            interpolated, width=rgb.width, height=rgb.height
+        )
 
     # RIFE copies the source's frame properties onto its RGB output; drop them
     # so the RGB->YUV conversion below is accepted.

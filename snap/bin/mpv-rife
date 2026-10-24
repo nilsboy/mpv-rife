@@ -15,10 +15,72 @@ export VSSCRIPT_PATH="$VS_PKG/libvsscript.so"
 export VAPOURSYNTH_EXTRA_PLUGIN_PATH="$SNAP/usr/lib/vapoursynth"
 export PYTHONPATH="$SNAP/usr/lib/python3/dist-packages${PYTHONPATH:+:$PYTHONPATH}"
 
+# The GPU stacks bake /usr paths into their lookups, but inside the confinement
+# /usr is the base snap, which ships no drivers. Add the bundled copies: Mesa's
+# Vulkan ICDs (RIFE runs on Vulkan), the GL/VA-API DRI drivers and the EGL
+# vendor file. VK_ADD_DRIVER_FILES appends to the loader's defaults so the
+# host's snapd-provided (NVIDIA) ICDs keep working.
+export VK_ADD_DRIVER_FILES="$SNAP/usr/share/vulkan/icd.d"
+export LIBGL_DRIVERS_PATH="$SNAP/usr/lib/x86_64-linux-gnu/dri"
+export LIBVA_DRIVERS_PATH="$SNAP/usr/lib/x86_64-linux-gnu/dri"
+export __EGL_VENDOR_LIBRARY_FILENAMES="$SNAP/usr/share/glvnd/egl_vendor.d/50_mesa.json"
+
+# PipeWire's compiled-in paths point at /usr, which is the base snap inside the
+# confinement and has no pipewire. Point it at the bundled modules, SPA plugins
+# and client config instead.
+export SPA_PLUGIN_DIR="$SNAP/usr/lib/x86_64-linux-gnu/spa-0.2"
+export PIPEWIRE_MODULE_DIR="$SNAP/usr/lib/x86_64-linux-gnu/pipewire-0.3"
+export PIPEWIRE_CONFIG_DIR="${PIPEWIRE_CONFIG_DIR:-$SNAP/usr/share/pipewire}"
+# The pipewire interface exposes the host user socket at $XDG_RUNTIME_DIR's
+# parent; the snap-specific runtime dir only contains the snap's own sockets.
+export PIPEWIRE_RUNTIME_DIR="${PIPEWIRE_RUNTIME_DIR:-${XDG_RUNTIME_DIR%/*}}"
+# PulseAudio clients derive their socket from XDG_RUNTIME_DIR too; point them at
+# the host pipewire-pulse socket so the pulse fallback works before the
+# (non-auto-connected) pipewire plug is connected.
+export PULSE_SERVER="${PULSE_SERVER:-unix:${XDG_RUNTIME_DIR%/*}/pulse/native}"
+# Snapd remaps XDG_RUNTIME_DIR to a snap-private directory, so a bare
+# WAYLAND_DISPLAY (e.g. "wayland-0") no longer resolves to the compositor
+# socket, which lives in the host runtime dir. Rewrite it to an absolute path.
+if [ -n "${WAYLAND_DISPLAY:-}" ] && [ "${WAYLAND_DISPLAY#/}" = "$WAYLAND_DISPLAY" ]; then
+    export WAYLAND_DISPLAY="${XDG_RUNTIME_DIR%/*}/$WAYLAND_DISPLAY"
+fi
+
 export XDG_CONFIG_HOME="${XDG_CONFIG_HOME:-$SNAP_USER_COMMON/config}"
-if [ ! -f "$XDG_CONFIG_HOME/vapoursynth/vapoursynth.toml" ]; then
+# VSScript resolves its Python interpreter from an entry keyed by the path the
+# library was loaded from. That path contains the snap revision, so a config
+# written before a refresh no longer matches; regenerate it whenever the current
+# key is absent. `vapoursynth config` merges rather than overwrites, so stale
+# keys are harmless.
+VSS_CONFIG="$XDG_CONFIG_HOME/vapoursynth/vapoursynth.toml"
+if ! grep -qF "\"$VSSCRIPT_PATH\"" "$VSS_CONFIG" 2>/dev/null; then
     mkdir -p "$XDG_CONFIG_HOME"
     "$SNAP/usr/bin/python3.14" -m vapoursynth config >/dev/null 2>&1 || true
 fi
+
+# The README uses the checkout-relative path `vapoursynth/rife.vpy`, but the
+# snap bundles the script under $SNAP, so that path only resolves from a source
+# tree. Rewrite any relative `vapoursynth=` argument that exists inside the snap
+# (and not relative to the current directory) to its absolute bundled path.
+_rewrite_count=$#
+while [ "$_rewrite_count" -gt 0 ]; do
+    _arg=$1
+    shift
+    case "$_arg" in
+        *vapoursynth=*)
+            _prefix=${_arg%%vapoursynth=*}
+            _path=${_arg#*vapoursynth=}
+            case "$_path" in
+                /*|"") ;;
+                *)
+                    if [ ! -e "$_path" ] && [ -e "$SNAP/$_path" ]; then
+                        _arg="${_prefix}vapoursynth=$SNAP/$_path"
+                    fi
+                    ;;
+            esac
+            ;;
+    esac
+    set -- "$@" "$_arg"
+    _rewrite_count=$((_rewrite_count - 1))
+done
 
 exec "$SNAP/usr/bin/mpv" --config-dir="$SNAP/mpv" "$@"

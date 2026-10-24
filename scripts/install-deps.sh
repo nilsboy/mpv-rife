@@ -47,6 +47,8 @@ apt-get install -y --no-install-recommends \
     libxrandr-dev \
     libxfixes-dev \
     libxpresent-dev \
+    libxss-dev \
+    libxv-dev \
     libxkbcommon-dev \
     libwayland-dev \
     wayland-protocols \

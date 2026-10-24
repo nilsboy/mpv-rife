@@ -59,6 +59,10 @@ bound to `Ctrl+r`:
 mpv --config-dir=mpv --profile=rife video.mkv
 ```
 
+In the snap, a relative `vapoursynth=` path that is not present in the current
+directory is resolved against the snap's bundled `/vapoursynth/rife.vpy`, so the
+command above works from anywhere.
+
 The toggle script reads the vpy path from `script-opts/rife-toggle.conf`.
 
 ### rife.vpy options
@@ -67,11 +71,18 @@ Configuration lives at the top of `vapoursynth/rife.vpy`:
 
 | Option | Meaning |
 | --- | --- |
-| `MODEL` | RIFE model id (see RIFE plugin README); `None` uses the plugin default |
+| `MODEL` | RIFE model id (see RIFE plugin README); default `55` (rife-v4.17-lite) |
 | `FACTOR_NUM`, `FACTOR_DEN` | Frame-rate multiplier, e.g. `2`/`1` doubles the rate |
 | `FPS_NUM`, `FPS_DEN` | Explicit target frame rate (overrides the factor) |
 | `GPU_ID` | Vulkan device index |
+| `GPU_THREAD` | Interpolation threads (more overlaps queue submissions; default `2`) |
+| `SCALE` | Interpolate at this fraction of the source size, then scale back up; `0.5` is ~4x faster |
+| `UHD` | Compute the flow at reduced resolution; `None` auto-enables at 1080p and above |
 | `SCENE_CHANGE` | Skip interpolation across scene changes |
+
+Interpolation is GPU-bound. If playback drops frames on a large source, lower
+`MODEL` cost further (e.g. an `*_lite_ensembleFalse` id), reduce the target rate,
+or interpolate a 1080p copy instead of 4K.
 
 ## Snap
 
@@ -86,13 +97,33 @@ sudo snap install --dangerous ./mpv-rife_*.snap
 The default managed build uses LXD; `snapcraft pack --destructive-mode` builds
 directly on the host (no LXD required) and is what the project targets.
 
+The snap requires the `pipewire` interface to talk to the host PipeWire daemon;
+it is not auto-connected:
+
+```sh
+sudo snap connect mpv-rife:pipewire
+```
+
+Without it, mpv falls back to the bundled PulseAudio client against the host
+pipewire-pulse socket.
+
+Video output uses X11 (`x11`, `xv`, `x11egl`, `x11vk`) or Wayland (`wlshm`,
+`dmabuf-wayland`, `wayland`, `waylandvk`) depending on `DISPLAY`/
+`WAYLAND_DISPLAY`. The `x11`, `wayland` and `opengl` interfaces are
+auto-connected; only `pipewire` needs the manual connect above.
+
+RIFE runs on Vulkan, so the snap bundles Mesa's Vulkan drivers and points
+`VK_ADD_DRIVER_FILES` at them; the host's own (NVIDIA) ICDs still take part.
+A Vulkan-capable GPU is required for actual interpolation.
+
 ## Tests
 
 ```sh
 tests/run-tests.sh
 ```
 
-Covers the vpy script syntax/load and the mpv `vapoursynth` filter availability.
+Covers the vpy script syntax/load, the mpv `vapoursynth` filter availability, the
+snap audio payload, and that the X11/Wayland video outputs are built and bundled.
 Actual interpolation needs a GPU and is verified manually.
 
 ## Notes

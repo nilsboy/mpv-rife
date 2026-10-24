@@ -12,12 +12,8 @@
   - Before touching TODO.md reread it to prevent external changes from deletion
   - Immediately when finishing a TODO prefix it with [x]
   - When all TODOs are done check if new ones where added to the file
-- Put final binaries into dist/ - but gitignore them
-- Use tmp/ for tempfiles - but gitignore them
-
-## Commands
-
-## Guidelines
+- Put final binaries into dist/ in project directory - but gitignore them
+- Use ./tmp/ in project directory for tempfiles - but gitignore them
 
 ## Code Style
 

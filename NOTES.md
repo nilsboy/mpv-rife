@@ -56,6 +56,71 @@ in `override-pull`.
   bundled `libvsscript.so` and generates the matching `vapoursynth.toml` entry.
 - The `runtime` (nil plugin) part installs the launcher, `mpv.conf`, the toggle
   script and `rife.vpy` from the project directory.
+- Audio: the bundled mpv has both `pipewire` and `pulse` outputs. `--ao=pipewire`
+  needs `libpipewire-0.3-modules` (the client-side modules) and
+  `pipewire-bin`'s `client.conf`, which the compiled-in `/usr` paths cannot find
+  inside the base snap, so the launcher sets `PIPEWIRE_MODULE_DIR`,
+  `SPA_PLUGIN_DIR` and `PIPEWIRE_CONFIG_DIR`. The socket itself requires the
+  `pipewire` interface, which is `deny-auto-connection`, so the launcher also
+  points `PIPEWIRE_RUNTIME_DIR`/`PULSE_SERVER` at the host user runtime dir
+  (`${XDG_RUNTIME_DIR%/*}`); AppArmor only allows the host socket once the plug
+  is connected. Without the pipewire plug, `pulse` against the host
+  pipewire-pulse socket is the fallback.
+- Video: mpv's meson only enables X11 when `x11`, `xscrnsaver`, `xext`,
+  `xpresent` and `xrandr` are all found. `libxss-dev` was absent, so `x11`,
+  `xv`, `x11egl` and `x11vk` were silently compiled out and every GPU vo failed
+  with `Error opening/initializing the selected video_out`. Adding `libxss-dev`
+  and `libxv-dev` to the build deps restores them; the matching runtime
+  (`libxss1`, `libxv1`, `libxpresent1`, `libxrandr2`, `libgl1`, `libglx0`,
+  `libopengl0`, `libegl-mesa0`, `libglx-mesa0`, `libxcb-glx0`, `libxxf86vm1`)
+  is staged because the base has none of it.
+- Wayland outputs (`wlshm`, `dmabuf-wayland`) were already compiled in. Snapd
+  remaps `XDG_RUNTIME_DIR` to `/run/user/<uid>/snap.<name>`, which still only
+  contains the snap's own sockets, so a relative `WAYLAND_DISPLAY` such as
+  `wayland-0` no longer resolves to the compositor socket in the host runtime
+  dir. The launcher rewrites a relative `WAYLAND_DISPLAY` to an absolute path
+  under `${XDG_RUNTIME_DIR%/*}`; the `wayland` interface allows the socket.
+- Vulkan: the snap carries `libvulkan1` but no ICD, and the loader's default
+  `/usr/share/vulkan/icd.d` resolves to the base snap, which has none, so every
+  Vulkan context and RIFE itself fail with `VK_ERROR_INCOMPATIBLE_DRIVER` /
+  `failed to create GPU instance`. `mesa-vulkan-drivers` (plus its deps
+  `libdisplay-info3`, `libllvm21`, `libelf1t64`, `libxshmfence1`, `libzstd1`,
+  `zlib1g`) is staged and the launcher sets `VK_ADD_DRIVER_FILES`. That variable
+  appends to the loader defaults, so snapd's host-provided NVIDIA ICDs still
+  work. `LIBGL_DRIVERS_PATH`/`LIBVA_DRIVERS_PATH` and
+  `__EGL_VENDOR_LIBRARY_FILENAMES` point at the bundled Mesa DRI drivers and EGL
+  vendor file, and `libgl1-mesa-dri` is staged for the GL/VA-API DRI drivers.
+- VSScript: the interpreter lookup is keyed by the path `libvsscript.so` was
+  loaded from. That path contains the snap revision, so a `vapoursynth.toml`
+  written before a refresh no longer matches and mpv reports "Python executable
+  and library path couldn't be determined". The launcher regenerates the config
+  whenever the current key is absent (`vapoursynth config` merges, leaving stale
+  keys behind).
+- The README's `--vf=vapoursynth=vapoursynth/rife.vpy` is relative to a source
+  checkout. mpv passes the string straight to VSScript, which resolves it
+  against the current directory, so from an arbitrary media folder it fails with
+  `[Errno 2] No such file or directory: 'vapoursynth/rife.vpy'`. The launcher
+  rewrites any relative `vapoursynth=` argument that is absent from the current
+  directory but exists under `$SNAP` to its absolute bundled path.
+- VA-API: `libva2` alone is not enough for `--hwdec=auto`. Without a driver
+  library in `LIBVA_DRIVERS_PATH` libva logs `va_openDriver() returns -1` and
+  silently falls back to software decoding, which then competes with RIFE for
+  CPU. `intel-media-va-driver` (GEN8+, iHD) and `i965-va-driver` (older Intel)
+  are staged; Mesa's own VA drivers for AMD/others come with `libgl1-mesa-dri`.
+- Model cost: the original default, model 5 (rife-v2.3), runs three networks
+  (flownet + contextnet + fusionnet); the v4 family runs only flownet. On the
+  same 640x360 llvmpipe benchmark rife-v4.17-lite was ~5.6x faster (0.89 vs
+  0.16 fps), so it is the bundled default (id 55). rife-v2.3 stays bundled for
+  users who want the higher quality and can afford the cost.
+- Throughput knobs, measured on the real 2160x1080 10-bit clip: RIFE's cost
+  scales with pixel count and optical flow dominates, so `SCALE` (interpolate at
+  a fraction of the source size, then upscale) is the strongest lever: 12 output
+  frames took 379 s at `SCALE=1.0` versus 94 s at `SCALE=0.5`. `GPU_THREAD=2`
+  beat `GPU_THREAD=1` (33 s vs 47 s for the same 8 frames), so it is left at 2.
+  `UHD` on its own barely changed the time (80 s vs 87 s). Even at `SCALE=0.5`
+  this iGPU produces roughly one output frame every 7 s versus the 48 fps a 2x
+  target needs, so real-time 4K interpolation is out of reach regardless; the
+  levers buy a few times, not the ~50x required.
 
 ## Disk pressure
 
